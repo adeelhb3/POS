@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiryana POS Online</title>
+<style>
+:root{--bg:#f4f6f2;--card:#fff;--tx:#1d2a23;--mut:#66736b;--ac:#1f6b4f;--bad:#c2432f;--bd:#dce1d8;color-scheme:light dark}
+@media(prefers-color-scheme:dark){:root{--bg:#121915;--card:#1b251f;--tx:#e8eee9;--mut:#93a299;--ac:#4cbf90;--bad:#ef7a66;--bd:#2c3a31}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 system-ui,sans-serif}
+#app{max-width:720px;margin:0 auto;padding:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px}
+h1{font-size:20px;margin:0 0 10px}input{width:100%;font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:10px;margin:4px 0}
+button{font:inherit;cursor:pointer;border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;padding:9px 12px}
+button.p{background:var(--ac);color:#fff;border-color:var(--ac);font-weight:600}button.big{width:100%;padding:14px;font-size:17px}
+.row{display:flex;gap:8px;align-items:center;justify-content:space-between}.mut{color:var(--mut);font-size:14px}.bad{color:var(--bad)}
+.item{padding:10px 0;border-bottom:1px solid var(--bd)}.tabs{display:flex;gap:6px;margin-bottom:12px}.tabs button{flex:1}.tabs .on{background:var(--ac);color:#fff}
+.tot{font-size:26px;font-weight:700}
+</style>
+</head>
+<body>
+<div id="app">Loading...</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>
+var SB=supabase.createClient('https://crhrhbkitnmwdqkmbyjb.supabase.co','sb_publishable_NQkQ4y5nPjr3VY2LiOkWVA_lulTuy47');
+var shop=null,sname='',cash=null,items=[],codes=[],cart=[],tab='sale',q='';
+function $(s){return document.querySelector(s)}
+function rs(n){return 'Rs '+Math.round(n).toLocaleString('en-US')}
+function esc(t){return String(t).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function uid(){return crypto.randomUUID()}
+function fail(e){alert('Error: '+(e.message||e))}
+var app=$('#app');
+
+async function init(){var s=await SB.auth.getSession();if(s.data.session)load();else loginView()}
+function loginView(msg){app.innerHTML='<div class="card"><h1>Kiryana POS</h1><input id="em" type="email" placeholder="Email"><input id="pw" type="password" placeholder="Password"><button class="p big" style="margin-top:8px" onclick="login()">Login</button><p class="bad">'+esc(msg||'')+'</p></div>'}
+async function login(){var r=await SB.auth.signInWithPassword({email:$('#em').value.trim(),password:$('#pw').value});if(r.error)loginView(r.error.message);else load()}
+async function logout(){await SB.auth.signOut();loginView()}
+async function load(){
+ var m=await SB.from('shop_members').select('shop_id,role,shops(name)').limit(1);
+ if(m.error||!m.data.length){app.innerHTML='<div class="card"><h1>No shop found</h1><p class="mut">This user is not linked to a shop yet.</p><button onclick="logout()">Logout</button></div>';return}
+ shop=m.data[0].shop_id;sname=m.data[0].shops.name;
+ var a=await SB.from('accounts').select('id').eq('shop_id',shop).eq('kind','cash').is('deleted_at',null).limit(1);cash=a.data[0].id;
+ await refresh()}
+async function refresh(){
+ var r=await Promise.all([SB.from('products').select('id,name,cost,price').eq('shop_id',shop).is('deleted_at',null).order('name'),SB.from('stock_levels').select('product_id,qty').eq('shop_id',shop),SB.from('barcodes').select('product_id,code').eq('shop_id',shop).is('deleted_at',null)]);
+ var st={};(r[1].data||[]).forEach(function(x){st[x.product_id]=+x.qty});codes=r[2].data||[];
+ items=(r[0].data||[]).map(function(p){return{id:p.id,name:p.name,cost:+p.cost,price:+p.price,stock:st[p.id]||0}});render()}
+
+function render(){
+ var t=['sale','items'].map(function(k){return '<button class="'+(tab==k?'on':'')+'" onclick="tab=\''+k+'\';render()">'+(k=='sale'?'Sale':'Items')+'</button>'}).join('');
+ app.innerHTML='<div class="row"><h1>'+esc(sname)+'</h1><button onclick="logout()">Logout</button></div><div class="tabs">'+t+'</div>'+(tab=='sale'?vSale():vItems());
+ if(tab=='sale')plist()}
+
+function vSale(){
+ var tot=cart.reduce(function(a,l){return a+l.q*l.price},0);
+ var lines=cart.map(function(l,i){return '<div class="item row"><div><b>'+esc(l.name)+'</b><div class="mut">'+rs(l.price)+' each</div></div><div class="row"><button onclick="qty('+i+',-1)">-</button><b>'+l.q+'</b><button onclick="qty('+i+',1)">+</button></div><b>'+rs(l.q*l.price)+'</b></div>'}).join('')||'<p class="mut">Cart is empty. Search an item or scan a barcode.</p>';
+ return '<div class="card">'+lines+'<div class="row" style="margin-top:10px"><span>Total (cash)</span><span class="tot">'+rs(tot)+'</span></div><button class="p big" style="margin-top:10px" onclick="sell()">Complete sale</button></div><input id="q" placeholder="Search item or scan barcode" value="'+esc(q)+'" oninput="q=this.value;plist()" onkeydown="if(event.key==\'Enter\')enter()"><div id="pl" style="margin-top:8px"></div>'}
+function plist(){var el=$('#pl');if(!el)return;var s=q.trim().toLowerCase();if(!s){el.innerHTML='<p class="mut">Type an item name or scan a barcode.</p>';return}
+ var ids={};codes.forEach(function(c){if(c.code.toLowerCase().indexOf(s)>-1)ids[c.product_id]=1});
+ var r=items.filter(function(p){return p.name.toLowerCase().indexOf(s)>-1||ids[p.id]});
+ el.innerHTML='<div class="card">'+(r.map(function(p){return '<div class="item row" onclick="add(\''+p.id+'\')" style="cursor:pointer"><div><b>'+esc(p.name)+'</b><div class="mut">'+p.stock+' in stock</div></div><b>'+rs(p.price)+'</b></div>'}).join('')||'<p class="mut">No items found.</p>')+'</div>'}
+function enter(){var c=codes.filter(function(x){return x.code==q.trim()})[0];if(c){q='';add(c.product_id)}}
+function add(id){var p=items.filter(function(x){return x.id==id})[0],l=cart.filter(function(x){return x.id==id})[0];if(l)l.q++;else cart.push({id:id,name:p.name,price:p.price,cost:p.cost,q:1});q='';render()}
+function qty(i,d){cart[i].q+=d;if(cart[i].q<=0)cart.splice(i,1);render()}
+
+async function sell(){
+ if(!cart.length)return alert('Cart is empty');
+ var total=cart.reduce(function(a,l){return a+l.q*l.price},0),cogs=cart.reduce(function(a,l){return a+l.q*l.cost},0),sid=uid(),eid=uid(),ts=new Date().toISOString(),r;
+ function L(g,d,c){return{shop_id:shop,entry_id:eid,gl_code:g,debit:d,credit:c}}
+ r=await SB.from('sales').insert({id:sid,shop_id:shop,ts:ts,total:total,paid:total,method:'cash',account_id:cash});if(r.error)return fail(r.error);
+ r=await SB.from('sale_items').insert(cart.map(function(l){return{shop_id:shop,sale_id:sid,product_id:l.id,qty:l.q,price:l.price,cost:l.cost}}));if(r.error)return fail(r.error);
+ r=await SB.from('stock_moves').insert(cart.map(function(l){return{shop_id:shop,product_id:l.id,qty:-l.q,ref_type:'sale',ref_id:sid,ts:ts}}));if(r.error)return fail(r.error);
+ r=await SB.from('cash_moves').insert({shop_id:shop,account_id:cash,amount:total,ref_type:'sale',ref_id:sid,note:'Sale',ts:ts});if(r.error)return fail(r.error);
+ r=await SB.from('journal_entries').insert({id:eid,shop_id:shop,ts:ts,memo:'Sale',ref_type:'sale',ref_id:sid});if(r.error)return fail(r.error);
+ r=await SB.from('journal_lines').insert([L('ACC:'+cash,total,0),L('SALES',0,total),L('COGS',cogs,0),L('INV',0,cogs)]);if(r.error)return fail(r.error);
+ cart=[];await refresh();alert('Sale saved: '+rs(total))}
+
+function vItems(){
+ var l=items.map(function(p){return '<div class="item"><div class="row"><b>'+esc(p.name)+'</b><span class="mut">Stock '+p.stock+'</span></div><div class="mut">Cost '+rs(p.cost)+' · Sale '+rs(p.price)+'</div></div>'}).join('')||'<p class="mut">No items yet.</p>';
+ return '<div class="card"><b>Add item</b><input id="in" placeholder="Item name"><input id="ic" type="number" inputmode="decimal" placeholder="Cost price"><input id="ip" type="number" inputmode="decimal" placeholder="Sale price"><input id="is" type="number" inputmode="decimal" placeholder="Opening stock"><input id="ib" placeholder="Barcodes (comma separated, optional)"><button class="p big" style="margin-top:8px" onclick="addItem()">Save item</button></div><div class="card">'+l+'</div>'}
+async function addItem(){
+ var n=$('#in').value.trim(),c=+$('#ic').value||0,p=+$('#ip').value||0,s=+$('#is').value||0,cs=$('#ib').value.split(/[\s,;]+/).filter(Boolean),id=uid(),r;
+ if(!n||!p)return alert('Enter item name and sale price');
+ r=await SB.from('products').insert({id:id,shop_id:shop,name:n,cost:c,price:p});if(r.error)return fail(r.error);
+ if(s>0){r=await SB.from('stock_moves').insert({shop_id:shop,product_id:id,qty:s,ref_type:'opening'});if(r.error)return fail(r.error)}
+ if(cs.length){r=await SB.from('barcodes').insert(cs.map(function(code){return{shop_id:shop,product_id:id,code:code}}));if(r.error)return fail(r.error)}
+ await refresh()}
+init();
+</script>
+</body>
+</html>
